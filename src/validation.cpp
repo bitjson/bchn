@@ -1616,6 +1616,11 @@ bool CChainState::ConnectBlock(const CBlock &block, CValidationState &state,
                      FormatStateMessage(state));
     }
 
+    // Enforce Upgrade12 activation transaction in the postactivation block
+    if (!CheckUpgrade12ActivationTx(consensusParams, block, pindex, state)) {
+        return error("%s: %s", __func__, FormatStateMessage(state));
+    }
+
     // Size check (both pre and post upgrade 10 are handled here, after CheckBlock above)
     const uint64_t nMaxBlockSize = GetNextBlockSizeLimit(::GetConfig(), pindex->pprev);
     uint64_t nThisBlockSize = 0;
@@ -3817,9 +3822,6 @@ static bool ContextualCheckBlock(const CBlock &block, CValidationState &state,
             return state.DoS(100, false, REJECT_INVALID, "bad-cb-height", false, "block height mismatch in coinbase");
         }
     }
-    if (!CheckUpgrade12ActivationTx(params, block, pindexPrev, state)) {
-        return false;
-    }
 
     return true;
 }
@@ -5852,22 +5854,35 @@ ActivationBlockTracker g_upgrade12_block_tracker(&IsUpgrade12Enabled);
 
 bool CheckUpgrade12ActivationTx(const Consensus::Params &params,
                                 const CBlock &block,
-                                const CBlockIndex *pindexPrev,
+                                const CBlockIndex *pindex,
                                 CValidationState &state) {
+    // Only enforce if a (post)activation transaction is configured for this network
     if (params.upgrade12ActivationTx.empty()) {
         return true;
     }
-    if (!IsUpgrade12Enabled(params, pindexPrev)) {
+
+    if (pindex == nullptr || pindex->pprev == nullptr) {
         return true;
     }
-    const CBlockIndex *activationBlock;
+
+    // Enforce exactly on the first postactivation block, i.e. the first block
+    // whose previous block is the (pre)activation block (per the tracker).
+    if (!IsUpgrade12Enabled(params, pindex->pprev)) {
+        return true;
+    }
+
+    const CBlockIndex *activationBlock = nullptr;
     {
         LOCK(cs_main);
-        activationBlock = g_upgrade12_block_tracker.GetActivationBlock(pindexPrev, params);
+        activationBlock = g_upgrade12_block_tracker.GetActivationBlock(pindex->pprev, params);
     }
-    if (activationBlock != pindexPrev) {
+
+    if (activationBlock != pindex->pprev) {
+        // This is not the first postactivation block; no enforcement here
         return true;
     }
+
+    // Require the configured (post)activation tx to be present in this block
     const uint256 &txid = params.upgrade12ActivationTxid;
     for (const auto &tx : block.vtx) {
         if (tx->GetId() == txid) {

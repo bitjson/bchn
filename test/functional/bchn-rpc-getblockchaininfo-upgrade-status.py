@@ -8,11 +8,12 @@ Verify getblockchaininfo.upgrade_status fields for the latest supported upgrade 
 
 Covers:
 - Presence and types of fields pre-activation (future activation time):
-  mempool_activated = false; block_activation_{height,hash} = null
+  mempool_activated = false; block_preactivation_{height,hash} = null; block_postactivation_{height,hash} = null
 - Correct mempool_activation_mtp equals CLI override
 - software_expiration_mtp present (>0)
-- Post-activation (past activation time) after mining a block:
-  mempool_activated = true; block_activation_{height,hash} populated and consistent
+- Post-activation (past activation time):
+  mempool_activated = true; preactivation populated and consistent;
+  postactivation is null until the first post-activation block exists, and populated thereafter
 """
 
 from test_framework.test_framework import BitcoinTestFramework
@@ -37,8 +38,10 @@ class GetBlockchainInfoUpgradeStatusTest(BitcoinTestFramework):
         assert_equal(us['mempool_activation_mtp'], self.future_time)
         assert_equal(us['mempool_activated'], False)
         # Not yet known
-        assert us['block_activation_height'] is None
-        assert us['block_activation_hash'] is None
+        assert us['block_preactivation_height'] is None
+        assert us['block_preactivation_hash'] is None
+        assert us['block_postactivation_height'] is None
+        assert us['block_postactivation_hash'] is None
         # On regtest, expiration may be unset (0). Just ensure the field exists and is numeric.
         assert 'software_expiration_mtp' in us
         assert isinstance(us['software_expiration_mtp'], int)
@@ -47,23 +50,41 @@ class GetBlockchainInfoUpgradeStatusTest(BitcoinTestFramework):
         # Ensure activation is definitely reached by using an activation time in the distant past
         past_time = 0
         self.restart_node(0, extra_args=[f'-upgrade12activationtime={past_time}'])
-        # Mine one block so tip/MTP reflect current and activation logic runs
-        node.generatetoaddress(1, node.getnewaddress())
+        # At this point mempool activation should become true, but postactivation
+        # block may not exist until we mine one. Check both cases.
 
         info = node.getblockchaininfo()
         us = info['upgrade_status']
         assert_equal(us['mempool_activation_mtp'], past_time)
         assert_equal(us['mempool_activated'], True)
 
-        # Activation block details should be available
-        act_h = us['block_activation_height']
-        act_hash = us['block_activation_hash']
+        # Preactivation block details should be available
+        act_h = us['block_preactivation_height']
+        act_hash = us['block_preactivation_hash']
         assert act_h is not None
         assert isinstance(act_h, int)
         assert act_hash is not None and isinstance(act_hash, str)
         # Hash is a valid 64-hex string and matches getblockhash(height)
         assert_equal(len(act_hash), 64)
         assert_equal(node.getblockhash(act_h), act_hash)
+
+        # Before mining a block, postactivation may be null on fresh activation
+        post_h = us['block_postactivation_height']
+        post_hash = us['block_postactivation_hash']
+        if post_h is None:
+            # Mine one block so the first post-activation block exists
+            node.generatetoaddress(1, node.getnewaddress())
+            info = node.getblockchaininfo()
+            us = info['upgrade_status']
+            post_h = us['block_postactivation_height']
+            post_hash = us['block_postactivation_hash']
+        assert post_h is not None
+        assert isinstance(post_h, int)
+        assert post_hash is not None and isinstance(post_hash, str)
+        assert_equal(len(post_hash), 64)
+        assert_equal(node.getblockhash(post_h), post_hash)
+        # And the postactivation block is exactly one after preactivation
+        assert_equal(post_h, act_h + 1)
 
 
 if __name__ == '__main__':

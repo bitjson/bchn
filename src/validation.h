@@ -619,7 +619,7 @@ bool TestBlockValidity(CValidationState &state, const CChainParams &params,
 
 bool CheckUpgrade12ActivationTx(const Consensus::Params &params,
                                 const CBlock &block,
-                                const CBlockIndex *pindexPrev,
+                                const CBlockIndex *pindex,
                                 CValidationState &state);
 
 /**

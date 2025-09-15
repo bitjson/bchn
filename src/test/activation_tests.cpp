@@ -386,14 +386,14 @@ BOOST_AUTO_TEST_CASE(check_upgrade12_activation_tx_rule) {
     const Consensus::Params &params_const = pparams->GetConsensus();
     auto &params = const_cast<Consensus::Params &>(params_const);
 
-    // Build a small synthetic chain and set MTP just before and at activation.
-    const auto activation = gArgs.GetArg("-upgrade12activationtime", params.upgrade12ActivationTime);
+    // Build a small synthetic chain and set MTP at activation time.
+    const auto activation_mtp = gArgs.GetArg("-upgrade12activationtime", params.upgrade12ActivationTime);
     std::array<CBlockIndex, 12> blocks;
     for (size_t i = 1; i < blocks.size(); ++i) {
         blocks[i].pprev = &blocks[i - 1];
         if (i > 1) blocks[i].pskip = &blocks[i - 2];
     }
-    SetMTP(blocks, activation);
+    SetMTP(blocks, activation_mtp);
 
     // Prepare a dummy activation txid and inject into params.
     CMutableTransaction mtx;
@@ -403,16 +403,21 @@ BOOST_AUTO_TEST_CASE(check_upgrade12_activation_tx_rule) {
     // Ensure rule is considered enabled by setting a non-empty raw vector.
     params.upgrade12ActivationTx = {0x00};
 
-    // The activation block is the previous index (pindexPrev) when we validate a new block.
-    const CBlockIndex *pindexPrev = nullptr;
+    // Locate the activation block relative to the synthetic chain tip
+    const CBlockIndex *activation = nullptr;
     {
         LOCK(cs_main);
-        pindexPrev = g_upgrade12_block_tracker.GetActivationBlock(&blocks.back(), params);
+        activation = g_upgrade12_block_tracker.GetActivationBlock(&blocks.back(), params);
     }
-    BOOST_REQUIRE(pindexPrev != nullptr);
-    BOOST_CHECK(IsUpgrade12Enabled(params, pindexPrev));
+    BOOST_REQUIRE(activation != nullptr);
+    BOOST_CHECK(IsUpgrade12Enabled(params, activation));
+    BOOST_CHECK(!IsUpgrade12Enabled(params, activation->pprev));
 
-    // Case 1: block includes the required tx -> pass
+    CBlockIndex postactivation_index;
+    postactivation_index.pprev = const_cast<CBlockIndex *>(activation);
+    const CBlockIndex *postactivation = &postactivation_index;
+
+    // Case 1: block includes the required tx -> pass (enforced at postactivation block)
     CBlock block_ok;
     {
         CMutableTransaction cb;
@@ -420,7 +425,7 @@ BOOST_AUTO_TEST_CASE(check_upgrade12_activation_tx_rule) {
     }
     block_ok.vtx.push_back(MakeTransactionRef(mtx));
     CValidationState state_ok;
-    BOOST_CHECK(CheckUpgrade12ActivationTx(params, block_ok, pindexPrev, state_ok));
+    BOOST_CHECK(CheckUpgrade12ActivationTx(params, block_ok, postactivation, state_ok));
 
     // Case 2: block missing the required tx -> fail
     CBlock block_bad;
@@ -429,7 +434,7 @@ BOOST_AUTO_TEST_CASE(check_upgrade12_activation_tx_rule) {
         block_bad.vtx.push_back(MakeTransactionRef(cb)); // coinbase placeholder
     }
     CValidationState state_bad;
-    BOOST_CHECK(!CheckUpgrade12ActivationTx(params, block_bad, pindexPrev, state_bad));
+    BOOST_CHECK(!CheckUpgrade12ActivationTx(params, block_bad, postactivation, state_bad));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
