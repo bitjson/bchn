@@ -27,6 +27,7 @@
 #include <hash.h>
 #include <index/txindex.h>
 #include <node/blockstorage.h>
+#include <node/txbroadcastqueue.h>
 #include <policy/fees.h>
 #include <policy/mempool.h>
 #include <policy/policy.h>
@@ -41,6 +42,7 @@
 #include <script/standard.h>
 #include <shutdown.h>
 #include <span.h>
+#include <sync.h>
 #include <timedata.h>
 #include <tinyformat.h>
 #include <txdb.h>
@@ -62,10 +64,11 @@
 #include <deque>
 #include <limits>
 #include <list>
-#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
+#include <optional>
 
 #define MICRO 0.000001
 #define MILLI 0.001
@@ -1613,6 +1616,11 @@ bool CChainState::ConnectBlock(const CBlock &block, CValidationState &state,
                      FormatStateMessage(state));
     }
 
+    // Enforce Upgrade12 activation transaction in the postactivation block
+    if (!CheckUpgrade12ActivationTx(consensusParams, block, pindex, state)) {
+        return error("%s: %s", __func__, FormatStateMessage(state));
+    }
+
     // Size check (both pre and post upgrade 10 are handled here, after CheckBlock above)
     const uint64_t nMaxBlockSize = GetNextBlockSizeLimit(::GetConfig(), pindex->pprev);
     uint64_t nThisBlockSize = 0;
@@ -2169,6 +2177,8 @@ static void UpdateTip(const Config &config, CBlockIndex *pindexNew)
 
     // Tell rest of codebase (in particular ABLA) about new tip
     TipChanged(config, pindexNew);
+
+    ProcessTxBroadcastQueue(config, pindexNew);
 
     // New best block
     g_mempool.AddTransactionsUpdated(1);
@@ -5842,6 +5852,46 @@ double GuessVerificationProgress(const ChainTxData &data,
 
 ActivationBlockTracker g_upgrade12_block_tracker(&IsUpgrade12Enabled);
 
+bool CheckUpgrade12ActivationTx(const Consensus::Params &params,
+                                const CBlock &block,
+                                const CBlockIndex *pindex,
+                                CValidationState &state) {
+    // Only enforce if a (post)activation transaction is configured for this network
+    if (params.upgrade12ActivationTx.empty()) {
+        return true;
+    }
+
+    if (pindex == nullptr || pindex->pprev == nullptr) {
+        return true;
+    }
+
+    // Enforce exactly on the first postactivation block, i.e. the first block
+    // whose previous block is the (pre)activation block (per the tracker).
+    if (!IsUpgrade12Enabled(params, pindex->pprev)) {
+        return true;
+    }
+
+    const CBlockIndex *activationBlock = nullptr;
+    {
+        LOCK(cs_main);
+        activationBlock = g_upgrade12_block_tracker.GetActivationBlock(pindex->pprev, params);
+    }
+
+    if (activationBlock != pindex->pprev) {
+        // This is not the first postactivation block; no enforcement here
+        return true;
+    }
+
+    // Require the configured (post)activation tx to be present in this block
+    const uint256 &txid = params.upgrade12ActivationTxid;
+    for (const auto &tx : block.vtx) {
+        if (tx->GetId() == txid) {
+            return true;
+        }
+    }
+    return state.DoS(100, false, REJECT_INVALID, "missing-activation-tx");
+}
+
 const CBlockIndex *
 ActivationBlockTracker::GetActivationBlock(const CBlockIndex *pindex, const Consensus::Params &params)
     EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
@@ -5877,7 +5927,7 @@ ActivationBlockTracker::GetActivationBlock(const CBlockIndex *pindex, const Cons
     while (pwalk->pprev) {
         // first, skip backwards testing predicate
         // The below code leverages CBlockIndex::pskip to walk back efficiently.
-        if (predicate(params, pwalk->pskip)) {
+        if (pwalk->pskip && predicate(params, pwalk->pskip)) {
             // skip backward
             pwalk = pwalk->pskip;
             continue; // continue skipping
