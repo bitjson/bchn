@@ -236,7 +236,8 @@ UniValue::Object ScriptPubKeyToUniv(const Config &config, const CScript &scriptP
     txnouttype type;
     std::vector<CTxDestination> addresses;
     int nRequired;
-    const uint32_t flags = STANDARD_SCRIPT_VERIFY_FLAGS | SCRIPT_ENABLE_P2SH_32 | SCRIPT_ENABLE_TOKENS;
+    const uint32_t flags = STANDARD_SCRIPT_VERIFY_FLAGS | SCRIPT_ENABLE_P2SH_32 | SCRIPT_ENABLE_TOKENS
+                           | SCRIPT_ENABLE_MAY2026;
     bool extracted = ExtractDestinations(scriptPubKey, type, addresses, nRequired, flags);
 
     if (extracted) {

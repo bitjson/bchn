@@ -188,7 +188,8 @@ bool ExtractDestination(const CScript &scriptPubKey, CTxDestination &addressRet,
         }
         return true;
     }
-    // Multisig txns have more than one address...
+    // - Bare multisig txns have more than one address
+    // - p2sh txns have no address
     return false;
 }
 
